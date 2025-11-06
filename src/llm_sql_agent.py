@@ -1,62 +1,40 @@
-import os
-import json
-import sqlite3
+import os, json, sqlite3
+from langchain_community.llms import Ollama
+from langchain.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
-import google.generativeai as genai
 
-# Load API key
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 DB_PATH = "db/insightpilot.db"
 SCHEMA_PATH = "db/schema_metadata.json"
 
-# Load schema context for Gemini
 with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
     SCHEMA = json.load(f)
 
+llm = Ollama(model="llama3") 
+
+
 def generate_sql(prompt):
-    """Use Gemini to generate a clean and complete SQL query."""
-    system_instruction = f"""
-    You are an expert data analyst AI.
-    You translate English questions into correct SQL SELECT statements for SQLite.
+    """Generate SQL using local Ollama model."""
+    system_prompt = f"""
+You are a data analyst. Translate the question into a valid SQLite SELECT query.
+Database schema:
+{json.dumps(SCHEMA, indent=2)}
 
-    The database schema is:
-    {json.dumps(SCHEMA, indent=2)}
+Rules:
+- Use correct column names.
+- Only SELECT statements (no INSERT/UPDATE/DELETE).
+- Add aggregates (AVG, COUNT, SUM) when appropriate.
+Return ONLY the SQL query text.
+"""
 
-    Requirements:
-    - Always use proper column names from the schema.
-    - Always include aggregates (AVG, COUNT, SUM) when user asks about 'highest', 'average', or 'total'.
-    - Always include column aliases (e.g., AS avg_time).
-    - Do NOT return markdown, comments, or code fences.
-    - Only produce valid SELECT queries that can be executed on SQLite.
-    """
+    full_prompt = f"{system_prompt}\nUser: {prompt}\nSQL:"
+    sql_query = llm.invoke(full_prompt).strip()
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
-    response = model.generate_content([
-        system_instruction,
-        f"User question: {prompt}",
-        "Output only the SQL query text (no formatting)."
-    ])
-
-    sql_query = response.text.strip()
+    # Clean up possible markdown fences/backticks
     for token in ["```sql", "```", "`"]:
         sql_query = sql_query.replace(token, "")
     sql_query = sql_query.strip().rstrip(";") + ";"
-
-    # Simple fallback check: ensure at least one aggregate function
-    if not any(keyword in sql_query.lower() for keyword in ["avg(", "count(", "sum(", "max(", "min("]):
-        print("⚠️ SQL missing aggregate — retrying generation...")
-        response = model.generate_content([
-            system_instruction,
-            f"User question: {prompt}. Include relevant aggregates (AVG, COUNT, etc)."
-        ])
-        sql_query = response.text.strip()
-        for token in ["```sql", "```", "`"]:
-            sql_query = sql_query.replace(token, "")
-        sql_query = sql_query.strip().rstrip(";") + ";"
-
     return sql_query
 
 
